@@ -1,0 +1,41 @@
+{
+  "name": "circleit",
+  "version": "0.3.0",
+  "description": "Draw on any web page in Chrome and send design feedback straight into this Codex thread.",
+  "author": { "name": "CircleIt" },
+  "keywords": ["design", "feedback", "annotation", "chrome", "screenshots", "frontend"],
+  "skills": "./skills/",
+  "mcpServers": "./codex.mcp.json",
+  "hooks": {
+    "hooks": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "mcp_tool",
+              "server": "circleit",
+              "tool": "circleit_session_started",
+              "input": { "session_id": "${session_id}", "cwd": "${cwd}" }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "CircleIt",
+    "shortDescription": "Design feedback drawn on your web pages, straight into Codex",
+    "longDescription": "Circle, box or pin anything on a web page in Chrome, type what you want changed, and press Send. CircleIt delivers the annotated screenshots and the exact DOM elements (selectors, text, styles, source-file hints) to this Codex thread, which picks the feedback up, makes the change, and reports back to the person who sent it.",
+    "developerName": "CircleIt",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Connect CircleIt to this machine",
+      "Show my open CircleIt feedback",
+      "Wait for CircleIt feedback and handle it"
+    ],
+    "brandColor": "#FF2D20",
+    "logo": "./assets/logo.png",
+    "screenshots": []
+  }
+}

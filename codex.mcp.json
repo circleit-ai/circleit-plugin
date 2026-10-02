@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "circleit": {
+      "command": "node",
+      "args": ["./server/circleit.mjs", "mcp", "--client", "codex", "--watch"],
+      "cwd": ".",
+      "env_vars": ["CIRCLEIT_API_URL", "CIRCLEIT_TOKEN", "CIRCLEIT_HOME", "CODEX_HOME", "CODEX_CLI_PATH"],
+      "tool_timeout_sec": 3700
+    }
+  }
+}

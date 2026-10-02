@@ -1,0 +1,13 @@
+{
+  "name": "circleit",
+  "description": "CircleIt: draw on a web page in Chrome and the feedback lands in your Claude Code session.",
+  "owner": { "name": "CircleIt" },
+  "plugins": [
+    {
+      "name": "circleit",
+      "source": "./",
+      "description": "Draw on any web page in Chrome and send design feedback straight into this session.",
+      "category": "productivity"
+    }
+  ]
+}
