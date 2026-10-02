@@ -1,7 +1,7 @@
 {
   "name": "circleit",
   "displayName": "CircleIt",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Draw on any web page in Chrome and send design feedback straight into this session.",
   "author": { "name": "CircleIt" },
   "keywords": ["design", "feedback", "annotation", "chrome", "screenshots", "frontend"],

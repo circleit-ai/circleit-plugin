@@ -7704,7 +7704,14 @@ var CircleItApi = class {
   async pollDeviceToken(deviceCode) {
     const res = await this.raw("POST", "/api/v1/device/token", { device_code: deviceCode });
     if (res.status === 428) return { status: "pending" };
-    if (res.status === 403) return { status: "denied" };
+    if (res.status === 403) {
+      let why;
+      try {
+        why = JSON.parse(await res.text()).error_description;
+      } catch {
+      }
+      return typeof why === "string" && why.trim() ? { status: "denied", message: why.trim() } : { status: "denied" };
+    }
     if (res.status === 410) return { status: "expired" };
     if (!res.ok) await this.fail(res);
     const b = this.parse(res, await res.text());
@@ -7774,7 +7781,7 @@ async function startDeviceFlow(opts) {
         saveCredentials(creds);
         return creds;
       }
-      if (r.status === "denied") throw new Error(`${BRAND.name} connection was denied in the browser.`);
+      if (r.status === "denied") throw new Error(r.message ?? `${BRAND.name} connection was denied in the browser.`);
       if (r.status === "expired" || waited >= expiresMs) throw new Error(`The ${BRAND.name} connection code expired. Try again.`);
       await sleep(intervalMs);
       waited += intervalMs;
@@ -29409,7 +29416,7 @@ function reopenOf(events) {
   const at = ordered.findIndex((e) => e.actor === "user" && e.type === "status" && e.status === "pending");
   if (at < 0) return null;
   const reply = ordered.slice(at + 1).find((e) => e.actor === "agent" && e.message?.trim());
-  return { at: ordered[at].created_at ?? null, previousReply: reply?.message?.trim() ?? null };
+  return { at: ordered[at].created_at ?? null, previousReply: reply?.message?.trim() ?? null, answer: ordered[at].message?.trim() || null };
 }
 function feedbackLine(f, detail, workspaceOrigins2) {
   const n = f.annotation_count;
@@ -29418,14 +29425,15 @@ function feedbackLine(f, detail, workspaceOrigins2) {
   const steps = `Use the ${BRAND.slug} skill: call the ${GET} tool with id ${f.id} to see the annotated screenshots, then implement the changes and call ${SET}.`;
   const tail = check2.state === "match" ? `${origin} ${check2.via === "workspace" ? "is this workspace's address" : `is a known address of project ${trunc(oneLine(f.project.name), NAME_MAX)}`}. ${steps}` : `Page ${origin} isn't among the addresses detected for this workspace (${trunc(check2.shown, ADDRESS_LIST_MAX)}). ${CHECK_FIRST}; ${ONLY_IF_OTHER}. Otherwise use the ${BRAND.slug} skill and call ${GET} with id ${f.id}.`;
   const reopen = reopenOf(detail?.events);
-  const reopened = (replyMax) => !reopen ? "" : reopen.previousReply && replyMax >= 16 ? `, reopened after an agent replied "${trunc(oneLine(reopen.previousReply).replace(/"/g, "'"), replyMax)}"` : ", reopened";
+  const quoted = reopen?.answer ?? reopen?.previousReply ?? null;
+  const reopened = (replyMax) => !reopen ? "" : quoted && replyMax >= 16 ? `, reopened ${reopen.answer ? "with the answer" : "after an agent replied"} "${trunc(oneLine(quoted).replace(/"/g, "'"), replyMax)}"` : ", reopened";
   const headWith = (urlMax, replyMax = REPLY_LINE_MAX) => `${BRAND.name} feedback #${f.id} for project ${trunc(oneLine(f.project.name), NAME_MAX)} \u2014 page ${trunc(oneLine(f.url), urlMax)} \u2014 from ${trunc(oneLine(f.author.name), NAME_MAX)}${reopened(replyMax)}`;
   const minBody = !f.comments.length && f.note?.trim() ? ', page note: "\u2026"' : `, ${n} annotation${n === 1 ? "" : "s"}`;
   let head = headWith(URL_MAX);
   const headRoom = LINE_MAX - tail.length - 2 - minBody.length;
   if (head.length > headRoom) head = headWith(Math.max(24, URL_MAX - (head.length - headRoom)));
-  if (head.length > headRoom && reopen?.previousReply) {
-    const shown = Math.min(REPLY_LINE_MAX, oneLine(reopen.previousReply).length);
+  if (head.length > headRoom && quoted) {
+    const shown = Math.min(REPLY_LINE_MAX, oneLine(quoted).length);
     head = headWith(24, shown - (head.length - headRoom));
   }
   const selectors = /* @__PURE__ */ new Map();
@@ -29490,15 +29498,16 @@ function feedbackBrief(f, workspaceOrigins2) {
   const reopen = reopenOf(f.events);
   if (reopen) {
     const when = reopen.at ? ` on ${reopen.at}` : "";
-    L.push("", "## Reopened", "", reopen.previousReply ? `This feedback was sent back${when}, after an agent replied: "${oneLine(reopen.previousReply)}". That reply didn't settle it: look at the annotations and screenshots again, find what is still wrong or missing, and fix that (or ask with ${SET} needs_info).` : `This was sent back${when}. Look at the annotations and screenshots again and find what is still wrong before changing code.`);
+    L.push("", "## Reopened", "", reopen.answer ? `This feedback was sent back${when} with an answer${reopen.previousReply ? ` to the question "${oneLine(reopen.previousReply)}"` : ""}: "${oneLine(reopen.answer)}". Make the change with that answer in mind (or ask again with ${SET} needs_info).` : reopen.previousReply ? `This feedback was sent back${when}, after an agent replied: "${oneLine(reopen.previousReply)}". That reply didn't settle it: look at the annotations and screenshots again, find what is still wrong or missing, and fix that (or ask with ${SET} needs_info).` : `This was sent back${when}. Look at the annotations and screenshots again and find what is still wrong before changing code.`);
   }
   if (f.note) {
     L.push("", "## Note", "", f.note);
   }
   L.push("", "## Annotations", "");
   const total = f.shots.length;
+  const nth = new Map(f.shots.map((s, i) => [s.index, i + 1]));
   for (const a of f.annotations) {
-    const shot = a.shot_index + 1;
+    const shot = nth.get(a.shot_index) ?? a.shot_index + 1;
     L.push(`${a.number}. "${a.comment}" (${a.kind}; Screenshot ${shot}${total ? ` of ${total}` : ""})`);
     if (a.targets.length) {
       L.push("   Targets:");
@@ -29507,7 +29516,11 @@ function feedbackBrief(f, workspaceOrigins2) {
   }
   if (f.shots.length) {
     L.push("", "## Screenshots", "");
-    for (const s of f.shots) L.push(`- Screenshot ${s.index + 1} below: annotations ${s.annotations.join(", ") || "none"}`);
+    for (const [i, s] of f.shots.entries()) {
+      const w = s.withdrawn ?? [];
+      const ignore = w.length ? ` (ignore mark${w.length === 1 ? "" : "s"} ${w.join(", ")} drawn on it: taken out before this was sent)` : "";
+      L.push(`- Screenshot ${i + 1} below: annotations ${s.annotations.join(", ") || "none"}${ignore}`);
+    }
   }
   L.push(
     "",
@@ -29530,7 +29543,7 @@ import { join as join5 } from "node:path";
 // package.json
 var package_default = {
   name: "circleit-connector",
-  version: "0.3.0",
+  version: "0.4.0",
   private: true,
   type: "module",
   engines: {
@@ -38034,7 +38047,7 @@ async function feedbackContent(api, id, origins) {
   const notes = [];
   loaded.forEach((r, i) => {
     if (r.status === "fulfilled") images.push({ type: "image", data: r.value.data.toString("base64"), mimeType: r.value.mimeType });
-    else notes.push({ type: "text", text: `Screenshot ${detail.shots[i].index + 1} could not be loaded (${r.reason?.message ?? r.reason}) \u2014 call ${tool("get_feedback")} again to retry.` });
+    else notes.push({ type: "text", text: `Screenshot ${i + 1} could not be loaded (${r.reason?.message ?? r.reason}) \u2014 call ${tool("get_feedback")} again to retry.` });
   });
   if (detail.status === "delivered") await api.setStatus(id, "in_progress").catch(() => {
   });
@@ -38212,7 +38225,7 @@ function registerFeedbackTools(server, ctx) {
 // src/mcp/server.ts
 var INSTRUCTIONS = `${BRAND.name} delivers design feedback drawn on a live page by a person in a Chrome extension: annotated screenshots plus DOM context. Workflow: when feedback arrives (or via ${tool("list_feedback")}), call ${tool("get_feedback")} with its id and look at every image (red marks and numbered badges are the reviewer's, not the design); confirm the page address belongs to this project; implement the changes; then call ${tool("set_status")} with resolved (or needs_info / dismissed) and a short message for the person who sent it, starting with the page path. If not connected, call ${tool("connect")} first.`;
 function createMcpServer(ctx, deps = {}) {
-  const server = new McpServer({ name: BRAND.slug, version: "0.3.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: BRAND.slug, version: "0.4.0" }, { instructions: INSTRUCTIONS });
   registerFeedbackTools(server, ctx);
   registerConnectTools(server, ctx, deps);
   return server;
