@@ -14,7 +14,7 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 **1. Fetch.** Call `circleit_get_feedback` with the id. You get a brief plus one image per screenshot, and the item is marked in progress. If the brief shows `Status: resolved` or `dismissed`, it's already handled, so skip it.
 
 **2. Study every screenshot before you touch code.**
-- The red marks belong to the reviewer, not the page: a freehand circle (`draw`), a rectangle (`box`), a pin dot (`pin`), or an outline round highlighted words (`text`). Each numbered badge matches the numbered comment in the brief.
+- The red marks belong to the reviewer, not the page: a freehand circle (`draw`), a rectangle (`box`), a pin dot (`pin`), or words highlighted in soft red with a red underline (`text`). Each numbered badge matches the numbered comment in the brief.
 - A comment is about what is inside its mark. Look at that element and what surrounds it.
 - The screenshot shows what is rendered now. Use it to judge size, spacing, colour, alignment and copy.
 
@@ -28,7 +28,7 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 **4. Interpret it like a senior product designer.**
 - Change what was marked, at the scope marked. "No eyebrows" on a circled label means removing that small uppercase label above the heading there, not every label on the site. Widen the scope only when the comment says to ("everywhere", "all of these"). If the same pattern repeats nearby, say so in your status message instead of changing it silently.
 - Vague taste comments ("too busy", "make it pop", "this is rubbish, replace it") still need a decision. Make a considered change that uses the project's existing colours, type scale, spacing and components. For replacement content, write real, plausible copy that fits the page, never lorem ipsum.
-- A `text` mark is exact: replace the quoted `before` words with `after` (or remove them for `Delete`) at that one occurrence, keeping the surrounding markup and leaving other occurrences alone unless the note says otherwise. With the words unchanged and a note, the note is the request.
+- A `text` mark is exact: replace the quoted `before` words with `after` (or remove them for `Delete`) at that one occurrence, keeping the surrounding markup and leaving other occurrences alone unless the note says otherwise. With the words unchanged and a note, the note is the request. A ⏎ inside the quotes is a line break the reviewer typed: break the text there the way the codebase does, and never type the symbol itself.
 - A page note with no marks applies to the whole page.
 - Keep the diff small. Don't refactor unrelated code, and don't commit or deploy unless the user has asked you to.
 

@@ -1,6 +1,6 @@
 # CircleIt plugin for Claude Code and Codex
 
-Circle, box or pin anything on a web page in Chrome, type what you want changed, and press **Send**. The feedback lands in your running Claude Code session or Codex thread. The agent wakes up, looks at the annotated screenshots and the exact DOM elements you marked (selector, text, styles and source-file hints), makes the change, and reports back. You see its message in the browser and on the dashboard.
+Circle, box or pin anything on a web page in Chrome and type what you want changed, or select words on the page and rewrite them. Press **Send** and the feedback lands in your running Claude Code session or Codex thread. The agent wakes up, looks at the annotated screenshots, the exact DOM elements you marked (selector, text, styles and source-file hints) and the old and new wording of any words you rewrote, makes the change, and reports back. You see its message in the browser and on the dashboard.
 
 This repository is the whole agent side: one plugin that installs in both Claude Code and Codex. You need a CircleIt account at https://circleit.ai and the CircleIt Chrome extension.
 
