@@ -29426,6 +29426,9 @@ function registrationProblemLine(p) {
   if (p.status === 402) {
     return `${BRAND.name} can't receive feedback for this workspace:${said || " the plan limit was reached."}${p.upgradeUrl ? ` Upgrade at ${p.upgradeUrl}` : " Upgrade the plan on the dashboard"}; ${BRAND.name} checks again every 5 minutes and starts by itself.`;
   }
+  if (p.code === "project_unavailable") {
+    return `${BRAND.name} can't receive feedback for this workspace:${said || " this project isn't shared with this user."} ${BRAND.name} checks again every 5 minutes and starts by itself once it's set up.`;
+  }
   return `${BRAND.name} can't register this workspace:${said || " this machine's sign-in has no access to the team."} If the user wants ${BRAND.name} feedback here, reconnect with ${CONNECT} (or /${BRAND.slug}:connect) and pick a team they belong to.`;
 }
 var oneLine = (s) => s.replace(/\s+/g, " ").trim();
@@ -29651,7 +29654,7 @@ import { join as join5 } from "node:path";
 // package.json
 var package_default = {
   name: "circleit-connector",
-  version: "0.5.1",
+  version: "0.5.2",
   private: true,
   type: "module",
   engines: {
@@ -29684,7 +29687,8 @@ function registrationProblemOf(e) {
   return {
     status: e.status,
     message: typeof body.message === "string" && body.message.trim() ? body.message.trim() : null,
-    upgradeUrl: typeof body.upgrade_url === "string" && body.upgrade_url ? body.upgrade_url : null
+    upgradeUrl: typeof body.upgrade_url === "string" && body.upgrade_url ? body.upgrade_url : null,
+    code: typeof body.code === "string" ? body.code : null
   };
 }
 var SessionRunner = class {
@@ -38340,7 +38344,7 @@ function registerFeedbackTools(server, ctx) {
 // src/mcp/server.ts
 var INSTRUCTIONS = `${BRAND.name} delivers design feedback drawn on a live page by a person in a Chrome extension: annotated screenshots plus DOM context. Workflow: when feedback arrives (or via ${tool("list_feedback")}), call ${tool("get_feedback")} with its id and look at every image (red marks and numbered badges are the reviewer's, not the design); confirm the page address belongs to this project; implement the changes; then call ${tool("set_status")} with resolved (or needs_info / dismissed) and a short message for the person who sent it, starting with the page path. If not connected, call ${tool("connect")} first.`;
 function createMcpServer(ctx, deps = {}) {
-  const server = new McpServer({ name: BRAND.slug, version: "0.5.1" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: BRAND.slug, version: "0.5.2" }, { instructions: INSTRUCTIONS });
   registerFeedbackTools(server, ctx);
   registerConnectTools(server, ctx, deps);
   return server;
@@ -38586,14 +38590,15 @@ ${c.token}`;
       if (runner?.blocked) return runner.blocked;
       if (runner?.session || !workspaceKnown) return null;
       const f = readProblemFile(cwd);
-      return f ? { status: f.status, message: f.message, upgradeUrl: f.upgradeUrl } : null;
+      return f ? { status: f.status, message: f.message, upgradeUrl: f.upgradeUrl, code: f.code ?? null } : null;
     },
     takeNotice() {
       const notes = [];
       const problem = ctx.registrationProblem?.() ?? null;
       const key = problem ? `${problem.status}
 ${problem.message}
-${problem.upgradeUrl}` : "";
+${problem.upgradeUrl}
+${problem.code ?? ""}` : "";
       if (problem && key !== problemNoticed) notes.push(registrationProblemLine(problem));
       problemNoticed = key;
       if (noticeCount > 0) {
