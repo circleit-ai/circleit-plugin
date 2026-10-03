@@ -1,6 +1,6 @@
 {
   "name": "circleit",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Draw on any web page in Chrome and send design feedback straight into this Codex thread.",
   "author": { "name": "CircleIt" },
   "keywords": ["design", "feedback", "annotation", "chrome", "screenshots", "frontend"],

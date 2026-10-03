@@ -14,7 +14,7 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 **1. Fetch.** Call `circleit_get_feedback` with the id. You get a brief plus one image per screenshot, and the item is marked in progress. If the brief shows `Status: resolved` or `dismissed`, it's already handled, so skip it.
 
 **2. Study every screenshot before you touch code.**
-- The red marks belong to the reviewer, not the page: a freehand circle (`draw`), a rectangle (`box`), or a pin dot (`pin`). Each numbered badge matches the numbered comment in the brief.
+- The red marks belong to the reviewer, not the page: a freehand circle (`draw`), a rectangle (`box`), a pin dot (`pin`), or an outline round highlighted words (`text`). Each numbered badge matches the numbered comment in the brief.
 - A comment is about what is inside its mark. Look at that element and what surrounds it.
 - The screenshot shows what is rendered now. Use it to judge size, spacing, colour, alignment and copy.
 
@@ -22,11 +22,13 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 1. `source:` hints (file:line and component). Open them first.
 2. Grep the distinctive visible `text:`. CSS may uppercase it (`text-transform`), so search case-insensitively.
 3. Grep distinctive classes or ids from the selector. Skip utility classes such as `flex` or `mt-4`.
+   - For a `text` mark, grep the quoted words first (exactly, then case-insensitively) and use the `Context:` line to pick the right occurrence. The words may live in a template, a CMS or a translation file.
 4. Confirm the file renders this page path (check the route), not a lookalike. Shared components affect every page that uses them, so check before you edit one.
 
 **4. Interpret it like a senior product designer.**
 - Change what was marked, at the scope marked. "No eyebrows" on a circled label means removing that small uppercase label above the heading there, not every label on the site. Widen the scope only when the comment says to ("everywhere", "all of these"). If the same pattern repeats nearby, say so in your status message instead of changing it silently.
 - Vague taste comments ("too busy", "make it pop", "this is rubbish, replace it") still need a decision. Make a considered change that uses the project's existing colours, type scale, spacing and components. For replacement content, write real, plausible copy that fits the page, never lorem ipsum.
+- A `text` mark is exact: replace the quoted `before` words with `after` (or remove them for `Delete`) at that one occurrence, keeping the surrounding markup and leaving other occurrences alone unless the note says otherwise. With the words unchanged and a note, the note is the request.
 - A page note with no marks applies to the whole page.
 - Keep the diff small. Don't refactor unrelated code, and don't commit or deploy unless the user has asked you to.
 
@@ -39,6 +41,7 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 **6. Report.** Call `circleit_set_status` with `resolved` and one or two short, plain-English sentences for the person who sent it. Start with the page path, describe what visibly changed, and mention anything you deliberately left alone. Leave out file names, selectors and jargon.
 
 - Good: `/see-a-pack: Removed the small "A REAL PACK" label above the heading, and replaced the facts list with a three-point summary of what's in the pack.`
+- Good (text): `/pricing: Changed the button from "Get started" to "Start free".`
 - Bad: `Edited Pack.vue lines 12-40 and removed p.eyebrow.`
 
 ## Safety
