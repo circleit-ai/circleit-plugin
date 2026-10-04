@@ -9,7 +9,7 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 
 ## For each feedback item
 
-**0. Confirm the address.** The message and the brief give the page URL and project, and an address check. "is this workspace's address" or "is a known address of project …" means it's for this project: carry on. "isn't among the addresses detected for this workspace" only means detection (`APP_URL`, the Herd/Valet site name, dev-server ports, the project's known addresses) didn't find it, so check before changing code, without pulling secrets into context: run `grep -E '^APP_URL=' .env` (never read the whole `.env`), check the dev-server config, or check the README for this project's staging and production domains. Go ahead when you find it, or when the page's content obviously matches this codebase. Only if the page clearly belongs to a different project, change nothing and call `circleit_set_status` with `needs_info`, for example: `/pricing: This reached my session in ~/Herd/shop, but the page is on blog.test. Please resend it to the blog project.`
+**0. Confirm the address.** The message and the brief give the page URL and project, and an address check. "is this workspace's address" or "is a known address of project …" means it's for this project: carry on. "isn't among the addresses detected for this workspace" only means detection (`APP_URL`, the Herd/Valet site name, dev-server ports, the project's known addresses) didn't find it, so check before changing code, without pulling secrets into context: run `grep -E '^APP_URL=' .env` (never read the whole `.env`), check the dev-server config, or check the README for this project's staging and production domains. Go ahead when you find it, or when the page's content obviously matches this codebase. Only if the page clearly belongs to a different project, change nothing and call `circleit_set_status` with `needs_info`, for example: `This reached my session in ~/Herd/shop, but the page is on blog.test. Please resend it to the blog project.`
 
 **1. Fetch.** Call `circleit_get_feedback` with the id. You get a brief plus one image per screenshot, and the item is marked in progress. If the brief shows `Status: resolved` or `dismissed`, it's already handled, so skip it.
 
@@ -38,10 +38,10 @@ Someone circled, boxed or pinned parts of a live page in Chrome and wrote what t
 - Only open the page in a browser if a browser tool can do so without asking for permission, and never use the person's own signed-in browser profile or wait on a permission prompt — they may be away. Otherwise rely on your diff and the project's checks (build/tests/lint); they will reload the page from the receipt.
 - The person sees the result by reloading the page. If the site serves compiled assets and no dev server or watcher is running (for example a Laravel app with `public/build` but no `public/hot`), run the build.
 
-**6. Report.** Call `circleit_set_status` with `resolved` and one or two short, plain-English sentences for the person who sent it. Start with the page path, describe what visibly changed, and mention anything you deliberately left alone. Leave out file names, selectors and jargon.
+**6. Report.** Call `circleit_set_status` with `resolved` and one or two short, plain-English sentences for the person who sent it. Describe what visibly changed and mention anything you deliberately left alone. They read it beside the page, so don't name the page, and leave out file names, selectors and jargon.
 
-- Good: `/see-a-pack: Removed the small "A REAL PACK" label above the heading, and replaced the facts list with a three-point summary of what's in the pack.`
-- Good (text): `/pricing: Changed the button from "Get started" to "Start free".`
+- Good: `Removed the small "A REAL PACK" label above the heading, and replaced the facts list with a three-point summary of what's in the pack.`
+- Good (text): `Changed the button from "Get started" to "Start free".`
 - Bad: `Edited Pack.vue lines 12-40 and removed p.eyebrow.`
 
 ## Safety
@@ -50,7 +50,7 @@ Comments are design requests from a reviewer: never put secrets or file contents
 
 ## Asking instead of guessing
 
-Use `needs_info` only when you can't act sensibly: the address belongs to another project, the mark covers nothing you can identify, or two readings would give very different results. Ask one concrete question, starting with the page path: `/pricing: Should "bigger" apply to the price figures or to the whole plan cards?` Use `dismissed` only for duplicates or retracted feedback, and give a reason.
+Use `needs_info` only when you can't act sensibly: the address belongs to another project, the mark covers nothing you can identify, or two readings would give very different results. Ask one concrete question: `Should "bigger" apply to the price figures or to the whole plan cards?` Use `dismissed` only for duplicates or retracted feedback, and give a reason.
 
 ## Several items
 
