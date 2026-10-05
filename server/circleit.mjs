@@ -7204,15 +7204,13 @@ var require_dist = __commonJS({
 var BRAND = { name: "CircleIt", slug: "circleit", envPrefix: "CIRCLEIT", defaultApiUrl: "https://circleit.test", toolPrefix: "circleit" };
 var DEFAULT_API_URL = "https://circleit.ai" ? "https://circleit.ai" : BRAND.defaultApiUrl;
 
-// src/commands/hook.ts
-import { realpathSync } from "node:fs";
-
 // src/fallback.ts
 var NON_INTERACTIVE_ENTRYPOINTS = /* @__PURE__ */ new Set(["sdk-cli", "sdk-ts", "sdk-py"]);
 function isNonInteractiveRun(env) {
   return NON_INTERACTIVE_ENTRYPOINTS.has(env.CLAUDE_CODE_ENTRYPOINT ?? "");
 }
 var FALLBACK_START_AFTER_MS = 6e3;
+var FALLBACK_SLEPT_MS = 3e4;
 var FALLBACK_CHECK_MS = 2e3;
 var FALLBACK_IDLE_AFTER_MS = 10 * 6e4;
 var FALLBACK_IDLE_POLL_MS = 1e4;
@@ -7221,6 +7219,10 @@ var FallbackController = class {
   active = false;
   /** Since when no monitor has been seen (null while one runs). */
   since;
+  /** Standing by for another conversation's server in this folder (said once in the log). */
+  standingBy = false;
+  /** When tick() last ran: a long gap means this process was asleep (the machine, or the process suspended). */
+  lastTick = null;
   o;
   constructor(o) {
     this.o = o;
@@ -7228,6 +7230,27 @@ var FallbackController = class {
   }
   now() {
     return (this.o.now ?? Date.now)();
+  }
+  holds() {
+    try {
+      return this.o.hold ? this.o.hold() : true;
+    } catch {
+      return true;
+    }
+  }
+  /** End this server's session; $release: let go of the folder too (not when another server already holds it). */
+  letGo(release = true) {
+    if (release) {
+      try {
+        this.o.release?.();
+      } catch {
+      }
+    }
+    try {
+      void Promise.resolve(this.o.stop()).catch(() => {
+      });
+    } catch {
+    }
   }
   tick() {
     let monitor = false;
@@ -7240,17 +7263,30 @@ var FallbackController = class {
       if (this.active || this.o.running?.()) {
         this.active = false;
         this.o.log?.("a monitor is delivering feedback for this folder now; ending this server's own session");
-        try {
-          void Promise.resolve(this.o.stop()).catch(() => {
-          });
-        } catch {
-        }
+        this.letGo();
       }
       return;
     }
     const t = this.now();
     if (this.since === null) this.since = t;
-    if (!this.active && t - this.since >= (this.o.startAfterMs ?? FALLBACK_START_AFTER_MS)) {
+    const woke = this.lastTick !== null && t - this.lastTick > FALLBACK_SLEPT_MS;
+    this.lastTick = t;
+    if (this.active) {
+      if (!this.holds()) {
+        this.active = false;
+        this.since = t;
+        this.o.log?.("another conversation in this folder delivers its feedback now; ending this server's own session");
+        this.letGo(false);
+      }
+      return;
+    }
+    if (!woke && t - this.since >= (this.o.startAfterMs ?? FALLBACK_START_AFTER_MS)) {
+      if (!this.holds()) {
+        if (!this.standingBy) this.o.log?.("another conversation in this folder already delivers its feedback (with the next message, in any of them)");
+        this.standingBy = true;
+        return;
+      }
+      this.standingBy = false;
       this.active = true;
       this.o.log?.("no monitor in this session: feedback is delivered with the next message (plugin hooks)");
       this.o.start();
@@ -7470,6 +7506,121 @@ function lastHookActivity(cwd) {
   }
 }
 
+// src/project.ts
+import { execFileSync } from "node:child_process";
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { basename, dirname, join as join3, resolve } from "node:path";
+function canonicalDir(dir) {
+  try {
+    return realpathSync.native(dir);
+  } catch {
+    return dir;
+  }
+}
+var defaultExec = (cmd, args, cwd) => {
+  try {
+    return execFileSync(cmd, args, { cwd, timeout: 3e3, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return null;
+  }
+};
+function normaliseRemote(remote) {
+  let r = remote.trim();
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\d+\/)(.+)$/.exec(r);
+  if (scp && !r.includes("://")) r = `${scp[1]}/${scp[2]}`;
+  else r = r.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
+  const slash = r.indexOf("/");
+  if (slash > 0) r = r.slice(0, slash).toLowerCase() + r.slice(slash);
+  else r = r.toLowerCase();
+  return r.replace(/\/+$/, "").replace(/\.git$/, "").replace(/\/+$/, "").replace(/:\d+(?=\/)/, "");
+}
+function findGitRoot(start) {
+  let dir = resolve(start);
+  for (; ; ) {
+    if (existsSync2(join3(dir, ".git"))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+}
+function normaliseOrigin(o) {
+  try {
+    const u = new URL(o.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+function read2(p) {
+  try {
+    return readFileSync2(p, "utf8");
+  } catch {
+    return null;
+  }
+}
+function detectProject(cwd, opts = {}) {
+  const exec = opts.exec ?? defaultExec;
+  const home = opts.home ?? homedir2();
+  const start = resolve(cwd);
+  const root = findGitRoot(start) ?? start;
+  const name = basename(root);
+  const remote = exec("git", ["remote", "get-url", "origin"], root)?.trim() || null;
+  const rawBranch = exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)?.trim() || null;
+  const branch = rawBranch === "HEAD" ? null : rawBranch;
+  const key = remote ? normaliseRemote(remote) : "path:" + createHash2("sha1").update(root).digest("hex");
+  return { root, key, name, gitRemote: remote, branch, origins: originsFor(start, root, home) };
+}
+function detectOrigins(cwd, opts = {}) {
+  const start = resolve(cwd);
+  return originsFor(start, findGitRoot(start) ?? start, opts.home ?? homedir2());
+}
+function originsFor(start, root, home) {
+  if (start === root) return originsAt(root, home);
+  return [.../* @__PURE__ */ new Set([...originsAt(start, home), ...originsAt(root, home)])];
+}
+function originsAt(root, home) {
+  const origins = [];
+  const add = (o) => {
+    const n = o && normaliseOrigin(o);
+    if (n && !origins.includes(n)) origins.push(n);
+  };
+  const env = read2(join3(root, ".env"));
+  const m = env && /^\s*APP_URL\s*=\s*(.*)$/m.exec(env);
+  if (m) add(m[1].trim().replace(/\s+#.*$/, "").replace(/^["']|["']$/g, ""));
+  for (const parked of ["Herd", "Sites", "Valet"]) {
+    if (root.startsWith(join3(home, parked) + "/")) {
+      const site = root.slice(join3(home, parked).length + 1).split("/")[0];
+      add(`https://${site}.test`);
+      add(`http://${site}.test`);
+      break;
+    }
+  }
+  const port = (n) => add(`http://localhost:${n}`);
+  for (const ext of ["js", "ts", "mjs", "mts", "cjs"]) {
+    const vite = read2(join3(root, `vite.config.${ext}`));
+    if (!vite) continue;
+    for (const pm of vite.matchAll(/\bport\s*:\s*(\d{2,5})/g)) port(pm[1]);
+  }
+  const pkgText = read2(join3(root, "package.json"));
+  if (pkgText) {
+    try {
+      const pkg = JSON.parse(pkgText);
+      for (const script of Object.values(pkg.scripts ?? {})) {
+        if (typeof script !== "string") continue;
+        for (const pm of script.matchAll(/(?:--port(?:=|\s+)|(?:^|\s)-p\s*)(\d{2,5})\b/g)) port(pm[1]);
+      }
+      const deps = { ...pkg.dependencies ?? {}, ...pkg.devDependencies ?? {} };
+      if ("vite" in deps) port(5173);
+      if ("next" in deps || "react-scripts" in deps) port(3e3);
+    } catch {
+    }
+  }
+  return origins;
+}
+
 // src/commands/hook.ts
 var MAX_LINES = 15;
 function readInput(stdin, timeoutMs) {
@@ -7499,11 +7650,7 @@ function readInput(stdin, timeoutMs) {
 function hookFolder(input2, env) {
   const dir = env.CLAUDE_PROJECT_DIR || (typeof input2.cwd === "string" ? input2.cwd : "");
   if (!dir) return null;
-  try {
-    return realpathSync(dir);
-  } catch {
-    return dir;
-  }
+  return canonicalDir(dir);
 }
 function lineWithAge(e, now) {
   const age = entryAge(e, now);
@@ -7563,14 +7710,14 @@ async function runHook(eventArg, io = {}) {
 }
 
 // src/credentials.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2 } from "node:path";
 function loadStoredCredentials() {
   return readFile();
 }
 function readFile() {
   try {
-    const c = JSON.parse(readFileSync2(credentialsPath(), "utf8"));
+    const c = JSON.parse(readFileSync3(credentialsPath(), "utf8"));
     if (c && typeof c.token === "string" && typeof c.apiUrl === "string") return c;
   } catch {
   }
@@ -7589,7 +7736,7 @@ function loadCredentials() {
 }
 function saveCredentials(c) {
   const p = credentialsPath();
-  mkdirSync2(dirname(p), { recursive: true, mode: 448 });
+  mkdirSync2(dirname2(p), { recursive: true, mode: 448 });
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
   try {
     writeFileSync2(tmp, JSON.stringify(c, null, 2) + "\n", { mode: 384 });
@@ -7755,14 +7902,14 @@ var CircleItApi = class {
 
 // src/machine-id.ts
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+import { chmodSync, mkdirSync as mkdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname3 } from "node:path";
 var VALID = /^[A-Za-z0-9-]{1,64}$/;
 function machineId() {
   const file2 = machineIdPath();
   const read3 = () => {
     try {
-      const value = readFileSync3(file2, "utf8").trim();
+      const value = readFileSync4(file2, "utf8").trim();
       return VALID.test(value) ? value : null;
     } catch {
       return null;
@@ -7771,7 +7918,7 @@ function machineId() {
   const existing = read3();
   if (existing) return existing;
   try {
-    mkdirSync3(dirname2(file2), { recursive: true, mode: 448 });
+    mkdirSync3(dirname3(file2), { recursive: true, mode: 448 });
     const id = randomUUID();
     try {
       writeFileSync3(file2, `${id}
@@ -7846,114 +7993,6 @@ function openUrl(url2) {
     child.unref();
   } catch {
   }
-}
-
-// src/project.ts
-import { execFileSync } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { basename, dirname as dirname3, join as join3, resolve } from "node:path";
-var defaultExec = (cmd, args, cwd) => {
-  try {
-    return execFileSync(cmd, args, { cwd, timeout: 3e3, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch {
-    return null;
-  }
-};
-function normaliseRemote(remote) {
-  let r = remote.trim();
-  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\d+\/)(.+)$/.exec(r);
-  if (scp && !r.includes("://")) r = `${scp[1]}/${scp[2]}`;
-  else r = r.replace(/^[a-z+]+:\/\//i, "").replace(/^[^@/]+@/, "");
-  const slash = r.indexOf("/");
-  if (slash > 0) r = r.slice(0, slash).toLowerCase() + r.slice(slash);
-  else r = r.toLowerCase();
-  return r.replace(/\/+$/, "").replace(/\.git$/, "").replace(/\/+$/, "").replace(/:\d+(?=\/)/, "");
-}
-function findGitRoot(start) {
-  let dir = resolve(start);
-  for (; ; ) {
-    if (existsSync2(join3(dir, ".git"))) return dir;
-    const up = dirname3(dir);
-    if (up === dir) return null;
-    dir = up;
-  }
-}
-function normaliseOrigin(o) {
-  try {
-    const u = new URL(o.trim());
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return u.origin;
-  } catch {
-    return null;
-  }
-}
-function read2(p) {
-  try {
-    return readFileSync4(p, "utf8");
-  } catch {
-    return null;
-  }
-}
-function detectProject(cwd, opts = {}) {
-  const exec = opts.exec ?? defaultExec;
-  const home = opts.home ?? homedir2();
-  const start = resolve(cwd);
-  const root = findGitRoot(start) ?? start;
-  const name = basename(root);
-  const remote = exec("git", ["remote", "get-url", "origin"], root)?.trim() || null;
-  const rawBranch = exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], root)?.trim() || null;
-  const branch = rawBranch === "HEAD" ? null : rawBranch;
-  const key = remote ? normaliseRemote(remote) : "path:" + createHash2("sha1").update(root).digest("hex");
-  return { root, key, name, gitRemote: remote, branch, origins: originsFor(start, root, home) };
-}
-function detectOrigins(cwd, opts = {}) {
-  const start = resolve(cwd);
-  return originsFor(start, findGitRoot(start) ?? start, opts.home ?? homedir2());
-}
-function originsFor(start, root, home) {
-  if (start === root) return originsAt(root, home);
-  return [.../* @__PURE__ */ new Set([...originsAt(start, home), ...originsAt(root, home)])];
-}
-function originsAt(root, home) {
-  const origins = [];
-  const add = (o) => {
-    const n = o && normaliseOrigin(o);
-    if (n && !origins.includes(n)) origins.push(n);
-  };
-  const env = read2(join3(root, ".env"));
-  const m = env && /^\s*APP_URL\s*=\s*(.*)$/m.exec(env);
-  if (m) add(m[1].trim().replace(/\s+#.*$/, "").replace(/^["']|["']$/g, ""));
-  for (const parked of ["Herd", "Sites", "Valet"]) {
-    if (root.startsWith(join3(home, parked) + "/")) {
-      const site = root.slice(join3(home, parked).length + 1).split("/")[0];
-      add(`https://${site}.test`);
-      add(`http://${site}.test`);
-      break;
-    }
-  }
-  const port = (n) => add(`http://localhost:${n}`);
-  for (const ext of ["js", "ts", "mjs", "mts", "cjs"]) {
-    const vite = read2(join3(root, `vite.config.${ext}`));
-    if (!vite) continue;
-    for (const pm of vite.matchAll(/\bport\s*:\s*(\d{2,5})/g)) port(pm[1]);
-  }
-  const pkgText = read2(join3(root, "package.json"));
-  if (pkgText) {
-    try {
-      const pkg = JSON.parse(pkgText);
-      for (const script of Object.values(pkg.scripts ?? {})) {
-        if (typeof script !== "string") continue;
-        for (const pm of script.matchAll(/(?:--port(?:=|\s+)|(?:^|\s)-p\s*)(\d{2,5})\b/g)) port(pm[1]);
-      }
-      const deps = { ...pkg.dependencies ?? {}, ...pkg.devDependencies ?? {} };
-      if ("vite" in deps) port(5173);
-      if ("next" in deps || "react-scripts" in deps) port(3e3);
-    } catch {
-    }
-  }
-  return origins;
 }
 
 // src/commands/login.ts
@@ -29647,14 +29686,14 @@ function feedbackBrief(f, workspaceOrigins2) {
 
 // src/session.ts
 import { createHash as createHash3 } from "node:crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, utimesSync as utimesSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { linkSync, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync2, utimesSync as utimesSync2, writeFileSync as writeFileSync4 } from "node:fs";
 import { hostname as osHostname } from "node:os";
 import { join as join5 } from "node:path";
 
 // package.json
 var package_default = {
   name: "circleit-connector",
-  version: "0.5.3",
+  version: "0.5.4",
   private: true,
   type: "module",
   engines: {
@@ -29680,6 +29719,9 @@ var package_default = {
 
 // src/session.ts
 var VERSION = package_default.version;
+function agentApp(client, env) {
+  return client === "claude-code" && env.CLAUDE_CODE_ENTRYPOINT ? env.CLAUDE_CODE_ENTRYPOINT : null;
+}
 var PERMANENT = /* @__PURE__ */ new Set([401, 402, 403]);
 function registrationProblemOf(e) {
   if (!(e instanceof ApiError) || !PERMANENT.has(e.status)) return null;
@@ -29928,6 +29970,7 @@ ${problem.message}`;
       cwd: this.cwd,
       branch: this.project.branch,
       ...this.opts.delivery ? { delivery: this.opts.delivery } : {},
+      ...this.opts.app ? { app: this.opts.app.slice(0, 32) } : {},
       project: { key: this.project.key, name: this.project.name, git_remote: this.project.gitRemote, origins: this.project.origins }
     });
     if (this.stopped) {
@@ -30102,6 +30145,107 @@ function monitorRunning(cwd, now = Date.now()) {
     if (d.cwd === cwd) return true;
   }
   return false;
+}
+var fallbacksDir = () => join5(homeDir(), "fallbacks");
+var fallbackPath = (cwd) => join5(fallbacksDir(), `${createHash3("sha1").update(cwd).digest("hex").slice(0, 20)}.json`);
+function holdFallback(cwd, now = Date.now(), pid = process.pid) {
+  mkdirSync4(fallbacksDir(), { recursive: true, mode: 448 });
+  const file2 = fallbackPath(cwd);
+  const mine = JSON.stringify({ pid, cwd, startedAt: new Date(now).toISOString() }) + "\n";
+  const tmp = `${file2}.${pid}.tmp`;
+  let created = null;
+  try {
+    writeFileSync4(tmp, mine, { mode: 384 });
+    linkSync(tmp, file2);
+    created = true;
+  } catch (e) {
+    if (e.code === "EEXIST") created = false;
+  } finally {
+    rmSync3(tmp, { force: true });
+  }
+  if (created === null) {
+    try {
+      writeFileSync4(file2, mine, { flag: "wx", mode: 384 });
+      created = true;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      created = false;
+    }
+  }
+  if (created) return true;
+  let held = null;
+  try {
+    held = JSON.parse(readFileSync5(file2, "utf8"));
+  } catch {
+  }
+  if (held?.pid === pid) {
+    try {
+      utimesSync2(file2, new Date(now), new Date(now));
+    } catch {
+    }
+    return true;
+  }
+  let fresh = false;
+  try {
+    fresh = now - statSync2(file2).mtimeMs <= PRESENCE_STALE_MS;
+  } catch {
+  }
+  if (held && typeof held.pid === "number" && fresh && pidAlive2(held.pid)) return false;
+  try {
+    writeFileSync4(tmp, mine, { mode: 384 });
+    renameSync3(tmp, file2);
+  } catch (e) {
+    rmSync3(tmp, { force: true });
+    throw e;
+  }
+  try {
+    return JSON.parse(readFileSync5(file2, "utf8")).pid === pid;
+  } catch {
+    return false;
+  }
+}
+function noteFallbackSession(cwd, s, pid = process.pid) {
+  const file2 = fallbackPath(cwd);
+  let held;
+  try {
+    held = JSON.parse(readFileSync5(file2, "utf8"));
+  } catch {
+    return;
+  }
+  if (held.pid !== pid) return;
+  const tmp = `${file2}.${pid}.tmp`;
+  try {
+    writeFileSync4(tmp, JSON.stringify({ ...held, session: { id: s.id, projectId: s.project.id, projectName: s.project.name } }) + "\n", { mode: 384 });
+    renameSync3(tmp, file2);
+  } catch {
+    rmSync3(tmp, { force: true });
+  }
+}
+function fallbackHeldElsewhere(cwd, now = Date.now(), pid = process.pid) {
+  const file2 = fallbackPath(cwd);
+  try {
+    const held = JSON.parse(readFileSync5(file2, "utf8"));
+    return typeof held?.pid === "number" && held.pid !== pid && pidAlive2(held.pid) && now - statSync2(file2).mtimeMs <= PRESENCE_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+function fallbackSession(cwd, now = Date.now()) {
+  const file2 = fallbackPath(cwd);
+  try {
+    const held = JSON.parse(readFileSync5(file2, "utf8"));
+    if (!held?.session || !pidAlive2(held.pid) || now - statSync2(file2).mtimeMs > PRESENCE_STALE_MS) return null;
+    return held.session;
+  } catch {
+    return null;
+  }
+}
+function releaseFallback(cwd, pid = process.pid) {
+  const file2 = fallbackPath(cwd);
+  try {
+    if (JSON.parse(readFileSync5(file2, "utf8")).pid === pid) rmSync3(file2, { force: true });
+  } catch {
+  }
 }
 var problemsDir = () => join5(homeDir(), "problems");
 var problemPath = (cwd) => join5(problemsDir(), `${createHash3("sha1").update(cwd).digest("hex").slice(0, 20)}.json`);
@@ -38361,11 +38505,12 @@ function defaultPluginRoot() {
 }
 var inside = (dir, root) => dir === root || dir.startsWith(root.endsWith(sep) ? root : root + sep);
 function workspaceDir(client, env, processCwd) {
-  if (client !== "claude-code" || !env.CLAUDE_PROJECT_DIR) return processCwd;
+  if (client !== "claude-code") return processCwd;
+  if (!env.CLAUDE_PROJECT_DIR) return canonicalDir(processCwd);
   try {
-    return realpathSync2(env.CLAUDE_PROJECT_DIR);
+    return realpathSync2.native(env.CLAUDE_PROJECT_DIR);
   } catch {
-    return processCwd;
+    return canonicalDir(processCwd);
   }
 }
 function wantsFallback(client, watch, env) {
@@ -38382,7 +38527,7 @@ function createContext(opts) {
   const pluginRoot = opts.pluginRoot === void 0 ? defaultPluginRoot() : opts.pluginRoot;
   const fallbackOn = !!opts.fallback && opts.client === "claude-code" && !opts.watch;
   const delivery = fallbackOn ? "next_message" : "wake";
-  let cwd = opts.cwd;
+  let cwd = canonicalDir(opts.cwd);
   let workspaceKnown = !isCodex || !pluginRoot || !inside(opts.cwd, pluginRoot);
   let project = detectProject(cwd);
   let api = null;
@@ -38456,11 +38601,21 @@ function createContext(opts) {
         client: opts.client,
         cwd,
         delivery,
+        app: agentApp(opts.client, process.env),
         drainOnStop: fallbackOn,
         loadCredentials: load,
         apiFactory: opts.apiFactory,
         deferWorkspace: !workspaceKnown,
         ...idle ? { idle } : {},
+        // The folder's other conversations name this session (their status, "this project") from the holder file.
+        ...fallbackOn && !opts.fallback?.hold ? { onSession: (s) => {
+          if (s) {
+            try {
+              noteFallbackSession(cwd, s);
+            } catch {
+            }
+          }
+        } } : {},
         log: (m) => log(m),
         ...opts.runnerOptions ?? {},
         onFeedback
@@ -38472,13 +38627,19 @@ function createContext(opts) {
   }
   if (opts.watch) ensureRunner();
   let fallbackTimer = null;
+  let ctl = null;
   if (fallbackOn) {
     const t = opts.fallback;
-    const ctl = new FallbackController({
+    ctl = new FallbackController({
       startAfterMs: t.startAfterMs,
       now: t.now,
       log,
       monitorRunning: t.monitorRunning ?? (() => monitorRunning(cwd)),
+      // One fallback session per folder on this computer: other conversations here stand by (same inbox).
+      hold: t.hold ?? (() => holdFallback(cwd)),
+      release: () => {
+        if (!t.hold) releaseFallback(cwd);
+      },
       start: () => {
         ensureRunner();
       },
@@ -38492,7 +38653,8 @@ function createContext(opts) {
         await r?.stop();
       }
     });
-    fallbackTimer = setInterval(() => ctl.tick(), t.checkMs ?? FALLBACK_CHECK_MS);
+    const c = ctl;
+    fallbackTimer = setInterval(() => c.tick(), t.checkMs ?? FALLBACK_CHECK_MS);
     fallbackTimer.unref?.();
   }
   const ctx = {
@@ -38518,7 +38680,9 @@ ${c.token}`;
     session() {
       if (runner?.session) return runner.session;
       const f = findLiveSession(cwd);
-      return f ? { id: f.sessionId, project: { id: f.projectId, name: f.projectName }, pending_count: 0 } : null;
+      if (f) return { id: f.sessionId, project: { id: f.projectId, name: f.projectName }, pending_count: 0 };
+      const h = fallbackOn ? fallbackSession(cwd) : null;
+      return h ? { id: h.id, project: { id: h.projectId, name: h.projectName }, pending_count: 0 } : null;
     },
     project: () => project,
     workspaceOrigins: () => workspaceKnown ? detectOrigins(cwd) : void 0,
@@ -38544,15 +38708,40 @@ ${c.token}`;
         } catch {
         }
       }
-      ensureRunner().wake();
+      const standingBy = fallbackOn && !runner && fallbackHeldElsewhere(cwd);
+      let inboxTimer;
+      if (standingBy) {
+        try {
+          markHookActivity(cwd);
+        } catch {
+        }
+      } else {
+        ensureRunner().wake();
+      }
       return new Promise((resolve2) => {
         let timer;
         const cleanup = () => {
           if (timer) clearTimeout(timer);
+          if (inboxTimer) clearInterval(inboxTimer);
           signal?.removeEventListener("abort", onAbort);
           const i = waiters.indexOf(waiter);
           if (i >= 0) waiters.splice(i, 1);
         };
+        if (standingBy) {
+          let ticks = 0;
+          inboxTimer = setInterval(() => {
+            try {
+              if (++ticks % 30 === 0) markHookActivity(cwd);
+              const e = takeOldestPending(cwd, "tool");
+              if (e) {
+                cleanup();
+                resolve2({ id: e.id });
+              }
+            } catch {
+            }
+          }, opts.fallback?.checkMs ?? 1e3);
+          inboxTimer.unref?.();
+        }
         const waiter = (f) => {
           cleanup();
           resolve2(f);
@@ -38657,6 +38846,7 @@ async function runMcp(o) {
 // src/commands/monitor.ts
 var NOT_CONNECTED_LINE = `${BRAND.name} isn't connected on this machine. If the user wants ${BRAND.name} feedback here, they can run /${BRAND.slug}:connect (or ask you to call ${BRAND.toolPrefix}_connect).`;
 async function runMonitor(opts) {
+  opts = { ...opts, cwd: canonicalDir(opts.cwd) };
   const out = opts.stdout ?? process.stdout;
   const err = opts.stderr ?? process.stderr;
   const proc = opts.proc ?? process;
@@ -38685,6 +38875,7 @@ async function runMonitor(opts) {
       ...opts.runnerOptions,
       // Each line wakes the session, even when it is idle.
       delivery: "wake",
+      app: agentApp(opts.client, process.env),
       onDisconnected: () => line(NOT_CONNECTED_LINE),
       // Re-detected per item (as circleit_get_feedback does), so an edited .env or port counts at once.
       onFeedback: (f, d) => line(feedbackLine(f, d ?? void 0, detectOrigins(opts.cwd))),
